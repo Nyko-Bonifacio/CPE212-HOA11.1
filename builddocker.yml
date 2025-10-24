@@ -1,0 +1,59 @@
+---
+- name: Build and run Docker image from Dockerfile
+  hosts: all
+  become: yes
+  vars:
+    image_name: webdb-server
+    container_name: mywebdb
+    dockerfile_remote: /tmp/Dockerfile
+    build_context: /tmp
+
+  tasks:
+    - name: Copy Dockerfile to remote /tmp
+      copy:
+        src: ./Dockerfile
+        dest: "{{ dockerfile_remote }}"
+        mode: '0644'
+
+    - name: Build Docker image
+      command: docker build -t "{{ image_name }}" "{{ build_context }}"
+      register: build_result
+      changed_when: "'Successfully built' in build_result.stdout or 'Successfully tagged' in build_result.stdout"
+      failed_when: build_result.rc != 0 and "'error' in build_result.stderr.lower()"
+
+    - name: Remove existing container if present
+      command: docker rm -f "{{ container_name }}"
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Stop any container using port 3306 or 8080
+      shell: |
+        docker ps --filter "publish=3306" -q | xargs -r docker rm -f
+        docker ps --filter "publish=8080" -q | xargs -r docker rm -f
+      ignore_errors: yes
+
+    - name: Run Docker container on unique ports per host
+      vars:
+        web_ports:
+          "192.168.56.110": "8080:80"
+          "192.168.56.111": "8081:80"
+          "192.168.56.113": "8082:80"
+        db_ports:
+          "192.168.56.110": "3306:3306"
+          "192.168.56.111": "3307:3306"
+          "192.168.56.113": "3308:3306"
+      command: >
+        docker run -d --name "{{ container_name }}"
+        -p {{ web_ports[inventory_hostname] }}
+        -p {{ db_ports[inventory_hostname] }}
+        "{{ image_name }}"
+      register: run_result
+      failed_when: run_result.rc != 0
+
+    - name: Show running containers
+      command: docker ps
+      register: ps_result
+
+    - name: debug
+      debug:
+        msg: "{{ ps_result.stdout_lines }}"
